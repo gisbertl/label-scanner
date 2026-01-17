@@ -1,2 +1,2 @@
-# label-scnner
+# label-scanner
 
