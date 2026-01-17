@@ -6,22 +6,29 @@
   <title>Etikett scannen</title>
   <style>
     body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;background:#f5f5f5;padding:16px}
-    .card{background:#fff;padding:16px;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,.1);max-width:560px;margin:auto}
+    .card{background:#fff;padding:16px;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,.1);max-width:600px;margin:auto}
     input,button,select{width:100%;padding:10px;margin-top:10px;font-size:16px;box-sizing:border-box}
     button{background:#0066cc;color:#fff;border:none;border-radius:6px;cursor:pointer}
     button:disabled{background:#999;cursor:not-allowed}
     img{max-width:100%;margin-top:10px;border-radius:6px}
-    .status{margin-top:10px;padding:10px;border-radius:6px;line-height:1.35;white-space:pre-wrap}
-    .ok{background:#e0f6e9}.err{background:#fde2e2}
-    pre{background:#f0f0f0;padding:10px;overflow-x:auto;border-radius:6px;margin-top:10px}
+    pre{background:#111;color:#eee;padding:10px;overflow:auto;border-radius:6px;margin-top:10px;font-size:13px;max-height:280px}
     .hint{color:#444;font-size:13px;margin-top:6px;line-height:1.35}
     .row{display:flex;gap:10px;align-items:center}
     .row > *{flex:1}
     label{display:block;margin-top:10px;font-size:14px;color:#333}
-    .small{font-size:12px;color:#555;margin-top:6px}
     .actions{display:flex;gap:10px;margin-top:10px}
     .actions button{flex:1}
     .secondary{background:#444}
+    .banner{
+      display:none;
+      margin-top:10px;
+      padding:12px;
+      border-radius:8px;
+      font-weight:600;
+      white-space:pre-wrap;
+    }
+    .banner.err{background:#fde2e2;color:#5b0b0b}
+    .banner.ok{background:#e0f6e9;color:#0b3b1a}
   </style>
 </head>
 <body>
@@ -29,16 +36,14 @@
     <h2>Etikett scannen</h2>
 
     <input id="webhookUrl" placeholder="n8n Webhook-URL (https://…)" autocomplete="off" />
-    <div class="hint">Wird lokal im Browser gespeichert (damit du es nicht jedes Mal eingeben musst).</div>
+    <div class="hint">URL & Key werden lokal gespeichert.</div>
 
     <input id="apiKey" placeholder="API Key (optional)" autocomplete="off" />
-    <div class="hint">Optional. Wenn gesetzt, wird als <code>Authorization: Bearer …</code> gesendet. Kann ebenfalls lokal gespeichert werden.</div>
 
     <div class="actions">
       <button id="saveBtn" class="secondary" type="button">URL/Key merken</button>
       <button id="clearBtn" class="secondary" type="button">Merken löschen</button>
     </div>
-    <div class="small">Hinweis: „Merken“ speichert in <b>localStorage</b> auf diesem Gerät/Browser. Nicht verwenden auf fremden Geräten.</div>
 
     <label for="maxDim">Foto-Größe (iPhone-Stabilität):</label>
     <div class="row">
@@ -46,24 +51,26 @@
         <option value="1024">1024 px (max. stabil)</option>
         <option value="1280">1280 px (sehr stabil)</option>
         <option value="1600" selected>1600 px (empfohlen)</option>
-        <option value="2048">2048 px (mehr Details)</option>
       </select>
       <select id="jpegQ">
         <option value="0.70">JPEG 70%</option>
         <option value="0.80">JPEG 80%</option>
         <option value="0.85" selected>JPEG 85% (empfohlen)</option>
-        <option value="0.92">JPEG 92%</option>
       </select>
     </div>
 
     <input id="fileInput" type="file" accept="image/*" capture="environment" />
-
     <img id="preview" style="display:none" alt="Vorschau" />
-
     <button id="scanBtn" disabled>Scannen</button>
 
-    <div id="status" class="status" style="display:none"></div>
-    <pre id="result" style="display:none"></pre>
+    <div id="banner" class="banner"></div>
+
+    <div class="actions">
+      <button id="copyErrBtn" class="secondary" type="button">Fehler kopieren</button>
+      <button id="clearLogBtn" class="secondary" type="button">Log löschen</button>
+    </div>
+
+    <pre id="log"></pre>
   </div>
 
 <script>
@@ -78,27 +85,37 @@ const clearBtn = document.getElementById('clearBtn');
 const fileInput = document.getElementById('fileInput');
 const preview = document.getElementById('preview');
 const scanBtn = document.getElementById('scanBtn');
-const statusEl = document.getElementById('status');
-const resultEl = document.getElementById('result');
 const maxDimEl = document.getElementById('maxDim');
 const jpegQEl = document.getElementById('jpegQ');
 
+const banner = document.getElementById('banner');
+const logEl = document.getElementById('log');
+const copyErrBtn = document.getElementById('copyErrBtn');
+const clearLogBtn = document.getElementById('clearLogBtn');
+
 let jpegBlob = null;
 let previewUrl = null;
+let lastErrorText = '';
 
-function showStatus(text, ok = true) {
-  statusEl.style.display = 'block';
-  statusEl.textContent = text;
-  statusEl.className = 'status ' + (ok ? 'ok' : 'err');
+function now() {
+  const d = new Date();
+  return d.toISOString().replace('T',' ').slice(0,19);
 }
-
+function appendLog(line) {
+  logEl.textContent = `[${now()}] ${line}\n` + logEl.textContent;
+}
+function showBanner(text, ok=true) {
+  banner.style.display = 'block';
+  banner.className = 'banner ' + (ok ? 'ok' : 'err');
+  banner.textContent = text;
+}
+function clearBanner() {
+  banner.style.display = 'none';
+  banner.textContent = '';
+}
 function revokePreviewUrl() {
-  if (previewUrl) {
-    URL.revokeObjectURL(previewUrl);
-    previewUrl = null;
-  }
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
 }
-
 async function blobToBase64(blob) {
   return await new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -108,35 +125,48 @@ async function blobToBase64(blob) {
   });
 }
 
-// --- Persistenz ---
+// Persistenz
 function loadSaved() {
   const savedUrl = localStorage.getItem(LS_URL_KEY);
   const savedKey = localStorage.getItem(LS_API_KEY);
   if (savedUrl) webhookEl.value = savedUrl;
   if (savedKey) apiKeyEl.value = savedKey;
 }
-function saveCurrent() {
+function saveCurrent(silent=false) {
   const url = webhookEl.value.trim();
   const key = apiKeyEl.value.trim();
   if (url) localStorage.setItem(LS_URL_KEY, url); else localStorage.removeItem(LS_URL_KEY);
   if (key) localStorage.setItem(LS_API_KEY, key); else localStorage.removeItem(LS_API_KEY);
-  showStatus('Gespeichert.', true);
-  setTimeout(() => { statusEl.style.display = 'none'; }, 1200);
+  if (!silent) showBanner('Gespeichert.', true);
 }
 function clearSaved() {
   localStorage.removeItem(LS_URL_KEY);
   localStorage.removeItem(LS_API_KEY);
-  showStatus('Gespeicherte Werte gelöscht.', true);
-  setTimeout(() => { statusEl.style.display = 'none'; }, 1200);
+  showBanner('Gespeicherte Werte gelöscht.', true);
 }
-saveBtn.addEventListener('click', saveCurrent);
+saveBtn.addEventListener('click', () => saveCurrent(false));
 clearBtn.addEventListener('click', clearSaved);
-webhookEl.addEventListener('change', saveCurrent);
-apiKeyEl.addEventListener('change', saveCurrent);
+webhookEl.addEventListener('change', () => saveCurrent(true));
+apiKeyEl.addEventListener('change', () => saveCurrent(true));
 
-// --- Bild laden & resizen (mit Fallback) ---
+// Copy / clear log
+copyErrBtn.addEventListener('click', async () => {
+  const text = lastErrorText || '(kein Fehler gespeichert)';
+  try {
+    await navigator.clipboard.writeText(text);
+    showBanner('Fehlertext kopiert.', true);
+  } catch (e) {
+    showBanner('Kopieren nicht möglich. Bitte Screenshot machen.\n\n' + text, false);
+  }
+});
+clearLogBtn.addEventListener('click', () => {
+  logEl.textContent = '';
+  lastErrorText = '';
+  clearBanner();
+});
+
+// Fallback loader
 async function loadBitmapFallback(file) {
-  // Fallback: FileReader -> Image -> draw
   const dataUrl = await new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(r.result);
@@ -151,33 +181,26 @@ async function loadBitmapFallback(file) {
     i.src = dataUrl;
   });
 
-  // Wir geben ein Objekt mit width/height und einem drawImage-kompatiblen Source zurück
   return { src: img, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
 }
 
+// Foto -> JPEG blob
 fileInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
 
   scanBtn.disabled = true;
-  resultEl.style.display = 'none';
-  showStatus('Foto wird vorbereitet…');
+  appendLog('Foto ausgewählt: ' + (file.name || '(kamera)') + ' | ' + (file.type || 'unknown'));
+  showBanner('Foto wird vorbereitet…', true);
 
   try {
     let source, sw, sh;
-
-    // Versuch 1: createImageBitmap
     try {
       const bitmap = await createImageBitmap(file);
-      source = bitmap;
-      sw = bitmap.width;
-      sh = bitmap.height;
-    } catch (err1) {
-      // Fallback
+      source = bitmap; sw = bitmap.width; sh = bitmap.height;
+    } catch {
       const fb = await loadBitmapFallback(file);
-      source = fb.src;
-      sw = fb.width;
-      sh = fb.height;
+      source = fb.src; sw = fb.width; sh = fb.height;
     }
 
     const maxDim = parseInt(maxDimEl.value, 10);
@@ -186,8 +209,7 @@ fileInput.addEventListener('change', async (e) => {
     const h = Math.max(1, Math.round(sh * scale));
 
     const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d', { alpha: false });
     ctx.drawImage(source, 0, 0, w, h);
 
@@ -200,30 +222,35 @@ fileInput.addEventListener('change', async (e) => {
     preview.src = previewUrl;
     preview.style.display = 'block';
 
-    showStatus(`Foto bereit (${w}×${h}, ${(jpegBlob.size/1024/1024).toFixed(2)} MB)`);
+    appendLog(`Foto bereit: ${w}x${h} | ${(jpegBlob.size/1024/1024).toFixed(2)} MB`);
+    showBanner(`Foto bereit (${w}×${h}, ${(jpegBlob.size/1024/1024).toFixed(2)} MB)`, true);
     scanBtn.disabled = false;
   } catch (err) {
     console.error(err);
     jpegBlob = null;
     revokePreviewUrl();
     preview.style.display = 'none';
-    showStatus('Foto konnte nicht verarbeitet werden.\nTipp: iPhone Einstellungen → Kamera → Formate → „Kompatibelste“.', false);
-    scanBtn.disabled = true;
+    lastErrorText = 'Foto-Fehler: ' + (err && err.message ? err.message : String(err));
+    appendLog(lastErrorText);
+    showBanner('Foto konnte nicht verarbeitet werden.', false);
   }
 });
 
+// Scan
 scanBtn.addEventListener('click', async () => {
   const url = webhookEl.value.trim();
-  if (!url) { showStatus('Bitte Webhook-URL eintragen', false); return; }
-  if (!jpegBlob) { showStatus('Kein Foto vorhanden', false); return; }
+  if (!url) { showBanner('Bitte Webhook-URL eintragen', false); return; }
+  if (!jpegBlob) { showBanner('Kein Foto vorhanden', false); return; }
 
-  saveCurrent();
+  saveCurrent(true);
 
-  showStatus('Etikett wird analysiert…');
+  showBanner('Etikett wird analysiert…', true);
+  appendLog('POST -> ' + url);
   scanBtn.disabled = true;
 
   try {
     const base64 = await blobToBase64(jpegBlob);
+    appendLog('Payload base64 length: ' + base64.length);
 
     const headers = { 'Content-Type': 'application/json' };
     const apiKey = apiKeyEl.value.trim();
@@ -235,25 +262,40 @@ scanBtn.addEventListener('click', async () => {
       body: JSON.stringify({ image: base64, image_type: 'image/jpeg' })
     });
 
+    appendLog('Response status: ' + res.status);
+
+    let bodyText = '';
+    try { bodyText = await res.text(); } catch (_) {}
+    if (bodyText) appendLog('Response body (first 300): ' + bodyText.slice(0,300));
+
     if (!res.ok) {
-      let detail = '';
-      try { detail = await res.text(); } catch (_) {}
-      throw new Error('HTTP ' + res.status + (detail ? (': ' + detail.slice(0, 300)) : ''));
+      lastErrorText = (`HTTP ${res.status}\n` + (bodyText || '')).trim();
+      showBanner('Fehler vom Server. Tippe „Fehler kopieren“ und sende mir den Text.', false);
+      throw new Error(lastErrorText);
     }
 
-    const data = await res.json();
-    resultEl.style.display = 'block';
-    resultEl.textContent = JSON.stringify(data, null, 2);
-    showStatus('Erfolgreich gescannt');
+    let data;
+    try { data = bodyText ? JSON.parse(bodyText) : {}; }
+    catch (e) {
+      lastErrorText = 'JSON-Parse-Fehler (Server antwortet nicht mit JSON).\n' + bodyText.slice(0,800);
+      showBanner('Antwort war kein JSON. Tippe „Fehler kopieren“ und sende mir den Text.', false);
+      throw new Error(lastErrorText);
+    }
+
+    showBanner('Erfolgreich gescannt', true);
+    appendLog('OK: JSON received with keys: ' + Object.keys(data).join(', '));
   } catch (err) {
     console.error(err);
-    showStatus('Fehler beim Scannen: ' + err.message, false);
+    if (!lastErrorText) lastErrorText = (err && err.message) ? err.message : String(err);
+    appendLog('ERROR: ' + lastErrorText);
   } finally {
     scanBtn.disabled = false;
   }
 });
 
 loadSaved();
+logEl.textContent = '';
+appendLog('App geladen.');
 </script>
 </body>
 </html>
